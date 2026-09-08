@@ -1,0 +1,16 @@
+{
+  "name": "ai-movement-coach",
+  "version": "1.0.0",
+  "description": "AI multilingual movement coach using Gemini",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "multer": "latest"
+  }
+}
