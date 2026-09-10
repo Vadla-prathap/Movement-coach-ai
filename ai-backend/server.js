@@ -8,6 +8,9 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
+const http = require("http");
+const { execFile } = require("child_process");
 
 const { GoogleGenAI } = require("@google/genai");
 
@@ -68,24 +71,81 @@ const upload = multer({
         const mimeType = String(file.mimetype || "").toLowerCase();
         const extension = path.extname(file.originalname || "").toLowerCase();
 
-        const allowedExtensions = [".mp4", ".webm", ".mov", ".avi", ".mpeg", ".mpg", ".ogg", ".mkv"];
-        const isVideo = mimeType.startsWith("video/") || allowedExtensions.includes(extension);
+        const allowedExtensions = [
+            ".mp4",
+            ".webm",
+            ".mov",
+            ".avi",
+            ".mpeg",
+            ".mpg",
+            ".ogg",
+            ".mkv"
+        ];
 
-        if (isVideo) cb(null, true);
-        else cb(new Error(`Only video files are allowed. Received MIME: ${mimeType}, Extension: ${extension}`));
+        const isVideo =
+            mimeType.startsWith("video/") ||
+            allowedExtensions.includes(extension);
+
+        if (isVideo) {
+            cb(null, true);
+        } else {
+            cb(
+                new Error(
+                    `Only video files are allowed. Received MIME: ${mimeType}, Extension: ${extension}`
+                )
+            );
+        }
     }
 });
 
 
 /* =========================================================
-   VALIDATION ALLOW-LISTS (Feature 16 hardening)
+   VALIDATION ALLOW-LISTS
 ========================================================= */
 
-const ALLOWED_MODES = ["dance", "gym", "yoga", "fitness", "exercise", "wellness"];
-const ALLOWED_EXERCISES = ["dance", "squat", "pushup", "lunge", "bicepcurl", "shoulderpress", "standing", "gym", "yoga", "fitness", "exercise", "wellness"];
-const ALLOWED_LANGUAGES = ["en-IN", "te-IN", "hi-IN"];
-const ALLOWED_GOALS = ["general", "strength", "flexibility", "weight", "activity"];
-const ALLOWED_LEVELS = ["beginner", "intermediate", "advanced"];
+const ALLOWED_MODES = [
+    "dance",
+    "gym",
+    "yoga",
+    "fitness",
+    "exercise",
+    "wellness"
+];
+
+const ALLOWED_EXERCISES = [
+    "dance",
+    "squat",
+    "pushup",
+    "lunge",
+    "bicepcurl",
+    "shoulderpress",
+    "standing",
+    "gym",
+    "yoga",
+    "fitness",
+    "exercise",
+    "wellness"
+];
+
+const ALLOWED_LANGUAGES = [
+    "en-IN",
+    "te-IN",
+    "hi-IN"
+];
+
+const ALLOWED_GOALS = [
+    "general",
+    "strength",
+    "flexibility",
+    "weight",
+    "activity"
+];
+
+const ALLOWED_LEVELS = [
+    "beginner",
+    "intermediate",
+    "advanced"
+];
 
 function sanitizeChoice(value, allowed, fallback) {
     const str = String(value || "").trim();
@@ -99,15 +159,10 @@ function sanitizeChoice(value, allowed, fallback) {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+
 /* =========================================================
-   NEW: AUTO-DETECT FRONTEND LOCATION
-   Different setups place server.js differently relative to the
-   frontend files (same folder, one level up, in a /frontend or
-   /public folder, and the HTML file itself may be named
-   index.html or front.html). Rather than hardcoding one layout
-   and silently 404ing on any other, check every likely
-   combination at startup and log exactly what was found (or
-   wasn't) so this is diagnosable in seconds instead of guessed at.
+   AUTO-DETECT FRONTEND LOCATION
 ========================================================= */
 
 const CANDIDATE_DIRS = [
@@ -118,17 +173,27 @@ const CANDIDATE_DIRS = [
     path.join(__dirname, "public"),
     path.join(__dirname, "frontend"),
 ];
-const CANDIDATE_FILENAMES = ["index.html", "front.html"];
+
+const CANDIDATE_FILENAMES = [
+    "index.html",
+    "front.html"
+];
 
 function findFrontendDir() {
     for (const dir of CANDIDATE_DIRS) {
         for (const filename of CANDIDATE_FILENAMES) {
             const fullPath = path.join(dir, filename);
+
             if (fs.existsSync(fullPath)) {
-                return { dir, filename, fullPath };
+                return {
+                    dir,
+                    filename,
+                    fullPath
+                };
             }
         }
     }
+
     return null;
 }
 
@@ -141,11 +206,19 @@ if (frontend) {
     console.error("");
     console.error("========================================");
     console.error("FRONTEND NOT FOUND — checked these locations:");
+
     CANDIDATE_DIRS.forEach(dir => {
-        CANDIDATE_FILENAMES.forEach(filename => console.error("  -", path.join(dir, filename)));
+        CANDIDATE_FILENAMES.forEach(filename => {
+            console.error("  -", path.join(dir, filename));
+        });
     });
-    console.error("Fix: place index.html, style.css and script.js in one of the");
-    console.error("folders above, or move server.js next to them.");
+
+    console.error(
+        "Fix: place index.html, style.css and script.js in one of the"
+    );
+    console.error(
+        "folders above, or move server.js next to them."
+    );
     console.error("========================================");
     console.error("");
 }
@@ -159,7 +232,9 @@ app.get("/", (req, res) => {
     if (!frontend) {
         return res.status(404).json({
             success: false,
-            error: "Frontend file not found. Checked index.html/front.html in: " + CANDIDATE_DIRS.join(", "),
+            error:
+                "Frontend file not found. Checked index.html/front.html in: " +
+                CANDIDATE_DIRS.join(", "),
         });
     }
 
@@ -174,9 +249,13 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
     res.json({
         success: true,
-        message: GEMINI_API_KEY ? "AI Movement Coach Backend is running" : "Backend running, but GEMINI_API_KEY is missing",
+        message: GEMINI_API_KEY
+            ? "AI Movement Coach Backend is running"
+            : "Backend running, but GEMINI_API_KEY is missing",
+
         ai: "Gemini",
         model: GEMINI_MODEL,
+
         features: [
             "video-analysis",
             "auto-exercise-recognition (client-side)",
@@ -195,139 +274,498 @@ app.get("/api/health", (req, res) => {
 
 app.post(
     "/api/analyze",
-    upload.fields([{ name: "video", maxCount: 1 }, { name: "reference", maxCount: 1 }]),
+
+    upload.fields([
+        {
+            name: "video",
+            maxCount: 1
+        },
+        {
+            name: "reference",
+            maxCount: 1
+        }
+    ]),
+
     async (req, res) => {
 
         let practicePath = null;
         let referencePath = null;
 
+        // NEW: temporary MP4 files created by FFmpeg
+        let practiceGeminiPath = null;
+        let referenceGeminiPath = null;
+
         try {
+
             if (!GEMINI_API_KEY) {
-                return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not configured." });
+                return res.status(500).json({
+                    success: false,
+                    error: "GEMINI_API_KEY is not configured."
+                });
             }
 
             const practiceFile = req.files?.video?.[0];
-            const referenceFile = req.files?.reference?.[0];
+            let referenceFile = req.files?.reference?.[0];
 
             if (!practiceFile) {
-                return res.status(400).json({ success: false, error: "Practice video is required." });
+                return res.status(400).json({
+                    success: false,
+                    error: "Practice video is required."
+                });
             }
 
             practicePath = practiceFile.path;
-            if (referenceFile) referencePath = referenceFile.path;
 
-            const mode = sanitizeChoice(req.body.mode, ALLOWED_MODES, "exercise");
-            const exercise = sanitizeChoice(req.body.exercise, ALLOWED_EXERCISES, mode);
-            const language = sanitizeChoice(req.body.language, ALLOWED_LANGUAGES, "en-IN");
+            if (referenceFile) {
+                referencePath = referenceFile.path;
+            }
 
-            /* ---- NEW: Feature 5 — on-device session metrics sent
-               alongside the video. All numeric fields are validated
-               and clamped; jointMetrics is parsed defensively since
-               it arrives as a JSON string over multipart form-data. ---- */
+
+            /* =====================================================
+               DIRECT REFERENCE VIDEO URL
+            ===================================================== */
+
+            const referenceUrl =
+                typeof req.body.referenceUrl === "string"
+                    ? req.body.referenceUrl.trim()
+                    : "";
+
+            if (!referenceFile && referenceUrl) {
+
+                console.log(
+                    "Fetching reference video from URL:",
+                    referenceUrl
+                );
+
+                try {
+
+                    const fetched = await fetchRemoteVideoToTemp(
+                        referenceUrl,
+                        uploadDir
+                    );
+
+                    referencePath = fetched.path;
+
+                    referenceFile = {
+                        originalname: fetched.filename,
+                        mimetype: fetched.mimeType
+                    };
+
+                    console.log(
+                        "Reference fetched from URL:",
+                        fetched.filename,
+                        fetched.mimeType
+                    );
+
+                } catch (fetchError) {
+
+                    console.warn(
+                        "Reference URL fetch failed:",
+                        fetchError.message
+                    );
+
+                    // Non-fatal — analysis continues without reference.
+                }
+            }
+
+
+            /* =====================================================
+               SAFE MODE / EXERCISE / LANGUAGE
+            ===================================================== */
+
+            const mode = sanitizeChoice(
+                req.body.mode,
+                ALLOWED_MODES,
+                "exercise"
+            );
+
+            const exercise = sanitizeChoice(
+                req.body.exercise,
+                ALLOWED_EXERCISES,
+                mode
+            );
+
+            const language = sanitizeChoice(
+                req.body.language,
+                ALLOWED_LANGUAGES,
+                "en-IN"
+            );
+
+
+            /* =====================================================
+               ON-DEVICE SESSION METRICS
+            ===================================================== */
+
             const sessionMetrics = {
-                reps: safeIntInRange(req.body.reps, 0, 500),
-                correctReps: safeIntInRange(req.body.correctReps, 0, 500),
-                corrections: safeIntInRange(req.body.corrections, 0, 500),
-                liveFormScore: safeIntInRange(req.body.liveFormScore, 0, 100),
-                recognitionConfidence: safeIntInRange(req.body.recognitionConfidence, 0, 100),
-                duration: safeIntInRange(req.body.duration, 0, 3600),
-                jointMetrics: safeParseJointMetrics(req.body.jointMetrics)
+
+                reps: safeIntInRange(
+                    req.body.reps,
+                    0,
+                    500
+                ),
+
+                correctReps: safeIntInRange(
+                    req.body.correctReps,
+                    0,
+                    500
+                ),
+
+                corrections: safeIntInRange(
+                    req.body.corrections,
+                    0,
+                    500
+                ),
+
+                liveFormScore: safeIntInRange(
+                    req.body.liveFormScore,
+                    0,
+                    100
+                ),
+
+                recognitionConfidence: safeIntInRange(
+                    req.body.recognitionConfidence,
+                    0,
+                    100
+                ),
+
+                duration: safeIntInRange(
+                    req.body.duration,
+                    0,
+                    3600
+                ),
+
+                jointMetrics: safeParseJointMetrics(
+                    req.body.jointMetrics
+                )
             };
+
+
+            /* =====================================================
+               LOG SESSION
+            ===================================================== */
 
             console.log("");
             console.log("========================================");
             console.log("AI ANALYSIS STARTED");
             console.log("========================================");
+
             console.log("Mode:", mode);
             console.log("Exercise:", exercise);
             console.log("Primary language:", language);
-            console.log("Session metrics:", sessionMetrics);
-            console.log("Practice:", practiceFile.originalname);
-            console.log("Practice MIME:", practiceFile.mimetype);
-            console.log("Reference:", referenceFile ? referenceFile.originalname : "None");
+
+            console.log(
+                "Session metrics:",
+                sessionMetrics
+            );
+
+            console.log(
+                "Practice:",
+                practiceFile.originalname
+            );
+
+            console.log(
+                "Practice MIME:",
+                practiceFile.mimetype
+            );
+
+            console.log(
+                "Reference:",
+                referenceFile
+                    ? referenceFile.originalname
+                    : "None"
+            );
+
             console.log("");
 
-            console.log("Uploading practice video to Gemini...");
 
-            let practiceGeminiFile = await ai.files.upload({
-                file: practicePath,
-                config: { mimeType: practiceFile.mimetype }
-            });
+            /* =====================================================
+               NEW: CONVERT PRACTICE VIDEO TO MP4
+               Browser recordings are commonly WebM.
+               Gemini receives a normalized H.264 MP4 instead.
+            ===================================================== */
 
-            console.log("Practice uploaded:", practiceGeminiFile.name);
-            practiceGeminiFile = await waitForFileReady(practiceGeminiFile.name);
-            console.log("Practice video ready.");
+            console.log(
+                "Preparing practice video for Gemini..."
+            );
+
+            practiceGeminiPath =
+                await convertVideoToMp4(practicePath);
+
+            console.log(
+                "Practice converted to MP4:",
+                practiceGeminiPath
+            );
+
+
+            /* =====================================================
+               UPLOAD PRACTICE VIDEO TO GEMINI
+            ===================================================== */
+
+            console.log(
+                "Uploading converted practice video to Gemini..."
+            );
+
+            let practiceGeminiFile =
+                await ai.files.upload({
+
+                    file: practiceGeminiPath,
+
+                    config: {
+                        mimeType: "video/mp4"
+                    }
+                });
+
+            console.log(
+                "Practice uploaded:",
+                practiceGeminiFile.name
+            );
+
+
+            practiceGeminiFile =
+                await waitForFileReady(
+                    practiceGeminiFile.name
+                );
+
+            console.log(
+                "Practice video ready."
+            );
+
+
+            /* =====================================================
+               REFERENCE VIDEO
+            ===================================================== */
 
             let referenceGeminiFile = null;
 
             if (referencePath) {
-                console.log("Uploading reference video to Gemini...");
 
-                referenceGeminiFile = await ai.files.upload({
-                    file: referencePath,
-                    config: { mimeType: referenceFile.mimetype }
-                });
+                console.log(
+                    "Preparing reference video for Gemini..."
+                );
 
-                console.log("Reference uploaded:", referenceGeminiFile.name);
-                referenceGeminiFile = await waitForFileReady(referenceGeminiFile.name);
-                console.log("Reference video ready.");
+                referenceGeminiPath =
+                    await convertVideoToMp4(
+                        referencePath
+                    );
+
+                console.log(
+                    "Reference converted to MP4:",
+                    referenceGeminiPath
+                );
+
+                console.log(
+                    "Uploading converted reference video to Gemini..."
+                );
+
+                referenceGeminiFile =
+                    await ai.files.upload({
+
+                        file: referenceGeminiPath,
+
+                        config: {
+                            mimeType: "video/mp4"
+                        }
+                    });
+
+                console.log(
+                    "Reference uploaded:",
+                    referenceGeminiFile.name
+                );
+
+                referenceGeminiFile =
+                    await waitForFileReady(
+                        referenceGeminiFile.name
+                    );
+
+                console.log(
+                    "Reference video ready."
+                );
             }
 
-            const prompt = buildAnalysisPrompt({ mode, exercise, language, hasReference: Boolean(referenceGeminiFile), sessionMetrics });
 
-            const contentParts = [{ text: prompt }];
+            /* =====================================================
+               BUILD GEMINI PROMPT
+            ===================================================== */
+
+            const prompt = buildAnalysisPrompt({
+
+                mode,
+                exercise,
+                language,
+
+                hasReference:
+                    Boolean(referenceGeminiFile),
+
+                sessionMetrics
+            });
+
+
+            /* =====================================================
+               GEMINI CONTENT PARTS
+            ===================================================== */
+
+            const contentParts = [
+                {
+                    text: prompt
+                }
+            ];
+
 
             if (referenceGeminiFile) {
+
                 contentParts.push({
-                    fileData: { fileUri: referenceGeminiFile.uri, mimeType: referenceGeminiFile.mimeType }
+
+                    fileData: {
+                        fileUri:
+                            referenceGeminiFile.uri,
+
+                        mimeType:
+                            referenceGeminiFile.mimeType
+                    }
                 });
             }
 
+
             contentParts.push({
-                fileData: { fileUri: practiceGeminiFile.uri, mimeType: practiceGeminiFile.mimeType }
+
+                fileData: {
+                    fileUri:
+                        practiceGeminiFile.uri,
+
+                    mimeType:
+                        practiceGeminiFile.mimeType
+                }
             });
+
+
+            /* =====================================================
+               SEND VIDEOS TO GEMINI
+            ===================================================== */
 
             console.log("");
-            console.log("Sending videos to Gemini...");
+            console.log(
+                "Sending videos to Gemini..."
+            );
 
-            const response = await ai.models.generateContent({
-                model: GEMINI_MODEL,
-                contents: [{ role: "user", parts: contentParts }],
-                config: { responseMimeType: "application/json" }
-            });
+
+            const response =
+                await ai.models.generateContent({
+
+                    model: GEMINI_MODEL,
+
+                    contents: [
+                        {
+                            role: "user",
+                            parts: contentParts
+                        }
+                    ],
+
+                    config: {
+                        responseMimeType:
+                            "application/json"
+                    }
+                });
+
 
             const rawText = response.text;
 
+
             console.log("");
-            console.log("Gemini response received.");
+            console.log(
+                "Gemini response received."
+            );
+
             console.log(rawText);
 
-            const result = parseGeminiJSON(rawText);
-            const cleaned = normalizeServerResult(result);
+
+            /* =====================================================
+               PARSE + NORMALIZE
+            ===================================================== */
+
+            const result =
+                parseGeminiJSON(rawText);
+
+            const cleaned =
+                normalizeServerResult(result);
+
 
             console.log("");
             console.log("========================================");
             console.log("AI ANALYSIS COMPLETE");
             console.log("========================================");
-            console.log("Score:", cleaned.score);
-            console.log("Mistakes:", cleaned.mistakes.length);
+
+            console.log(
+                "Score:",
+                cleaned.score
+            );
+
+            console.log(
+                "Mistakes:",
+                cleaned.mistakes.length
+            );
+
             console.log("");
 
-            return res.json({ success: true, ...cleaned });
+
+            return res.json({
+                success: true,
+                ...cleaned
+            });
+
 
         } catch (error) {
+
             console.error("");
             console.error("========================================");
             console.error("AI ANALYSIS ERROR");
             console.error("========================================");
+
             console.error(error);
+
             console.error("");
 
-            return res.status(500).json({ success: false, error: error.message || "AI analysis failed." });
+            console.error(
+                "REAL GEMINI ERROR MESSAGE:",
+                error?.message
+            );
+
+            console.error(
+                "REAL GEMINI ERROR STACK:",
+                error?.stack
+            );
+
+            console.error(
+                "REAL GEMINI ERROR OBJECT:",
+                JSON.stringify(error, null, 2)
+            );
+
+
+            const classified =
+                classifyGeminiError(error);
+
+
+            return res.status(
+                classified.status
+            ).json({
+
+                success: false,
+
+                error:
+                    classified.error
+            });
+
 
         } finally {
+
+            /* =====================================================
+               CLEAN ALL TEMPORARY FILES
+            ===================================================== */
+
             cleanupFile(practicePath);
             cleanupFile(referencePath);
+
+            cleanupFile(practiceGeminiPath);
+            cleanupFile(referenceGeminiPath);
         }
     }
 );
@@ -337,82 +775,263 @@ app.post(
    PERSONALIZED FITNESS PLAN
 ========================================================= */
 
-app.post("/api/fitness-plan", async (req, res) => {
-    try {
-        if (!GEMINI_API_KEY) {
-            return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not configured." });
+app.post(
+    "/api/fitness-plan",
+    async (req, res) => {
+
+        try {
+
+            if (!GEMINI_API_KEY) {
+
+                return res.status(500).json({
+                    success: false,
+                    error:
+                        "GEMINI_API_KEY is not configured."
+                });
+            }
+
+
+            const safeGoal =
+                sanitizeChoice(
+                    req.body?.goal,
+                    ALLOWED_GOALS,
+                    "general"
+                );
+
+            const safeLevel =
+                sanitizeChoice(
+                    req.body?.level,
+                    ALLOWED_LEVELS,
+                    "beginner"
+                );
+
+            const safeMode =
+                sanitizeChoice(
+                    req.body?.mode,
+                    ALLOWED_MODES,
+                    "exercise"
+                );
+
+            const safeLanguage =
+                sanitizeChoice(
+                    req.body?.language,
+                    ALLOWED_LANGUAGES,
+                    "en-IN"
+                );
+
+
+            console.log("");
+
+            console.log(
+                "Fitness plan requested:",
+                {
+                    goal: safeGoal,
+                    level: safeLevel,
+                    mode: safeMode
+                }
+            );
+
+
+            const prompt =
+                buildFitnessPlanPrompt({
+
+                    goal: safeGoal,
+                    level: safeLevel,
+                    mode: safeMode,
+                    language: safeLanguage
+
+                });
+
+
+            const response =
+                await ai.models.generateContent({
+
+                    model: GEMINI_MODEL,
+
+                    contents: [
+                        {
+                            role: "user",
+                            parts: [
+                                {
+                                    text: prompt
+                                }
+                            ]
+                        }
+                    ],
+
+                    config: {
+                        responseMimeType:
+                            "application/json"
+                    }
+                });
+
+
+            const result =
+                parseGeminiJSON(
+                    response.text
+                );
+
+
+            const cleaned =
+                normalizeFitnessPlan(
+                    result
+                );
+
+
+            return res.json({
+                success: true,
+                ...cleaned
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "Fitness plan error:",
+                error
+            );
+
+
+            const classified =
+                classifyGeminiError(error);
+
+
+            return res.status(
+                classified.status
+            ).json({
+
+                success: false,
+
+                error:
+                    classified.error
+            });
         }
-
-        const safeGoal = sanitizeChoice(req.body?.goal, ALLOWED_GOALS, "general");
-        const safeLevel = sanitizeChoice(req.body?.level, ALLOWED_LEVELS, "beginner");
-        const safeMode = sanitizeChoice(req.body?.mode, ALLOWED_MODES, "exercise");
-        const safeLanguage = sanitizeChoice(req.body?.language, ALLOWED_LANGUAGES, "en-IN");
-
-        console.log("");
-        console.log("Fitness plan requested:", { goal: safeGoal, level: safeLevel, mode: safeMode });
-
-        const prompt = buildFitnessPlanPrompt({
-            goal: safeGoal, level: safeLevel, mode: safeMode, language: safeLanguage
-        });
-
-        const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            config: { responseMimeType: "application/json" }
-        });
-
-        const result = parseGeminiJSON(response.text);
-        const cleaned = normalizeFitnessPlan(result);
-
-        return res.json({ success: true, ...cleaned });
-
-    } catch (error) {
-        console.error("Fitness plan error:", error);
-        return res.status(500).json({ success: false, error: error.message || "Fitness plan generation failed." });
     }
-});
+);
 
 
 /* =========================================================
    ADAPTIVE AI COACH RECOMMENDATION
-   Takes the client-side rep/form metrics for the just-finished
-   set (and the previous set for the same exercise, if any) and
-   asks Gemini for a short, personalized, non-diagnostic
-   recommendation. No video is sent here — just numbers.
 ========================================================= */
 
-app.post("/api/coach-recommendation", async (req, res) => {
-    try {
-        if (!GEMINI_API_KEY) {
-            return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not configured." });
-        }
+app.post(
+    "/api/coach-recommendation",
+    async (req, res) => {
 
-        const { exercise, current, previous } = req.body || {};
-        const language = sanitizeChoice(req.body?.language, ALLOWED_LANGUAGES, "en-IN");
+        try {
 
-        if (!current || typeof current !== "object") {
-            return res.status(400).json({ success: false, error: "current session metrics are required." });
-        }
+            if (!GEMINI_API_KEY) {
 
-        const safeExercise = String(exercise || "general movement").slice(0, 60);
-        const languageName = languageDisplayName(language);
+                return res.status(500).json({
+                    success: false,
+                    error:
+                        "GEMINI_API_KEY is not configured."
+                });
+            }
 
-        const safeCurrent = {
-            score: safeNumber(current.score),
-            reps: safeNumber(current.reps),
-            correctReps: safeNumber(current.correctReps),
-            corrections: safeNumber(current.corrections),
-            duration: safeNumber(current.duration)
-        };
 
-        const safePrevious = previous && typeof previous === "object" ? {
-            score: safeNumber(previous.score),
-            reps: safeNumber(previous.reps),
-            correctReps: safeNumber(previous.correctReps),
-            corrections: safeNumber(previous.corrections)
-        } : null;
+            const {
+                exercise,
+                current,
+                previous
+            } = req.body || {};
 
-        const prompt = `
+
+            const language =
+                sanitizeChoice(
+                    req.body?.language,
+                    ALLOWED_LANGUAGES,
+                    "en-IN"
+                );
+
+
+            if (
+                !current ||
+                typeof current !== "object"
+            ) {
+
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        "current session metrics are required."
+                });
+            }
+
+
+            const safeExercise =
+                String(
+                    exercise ||
+                    "general movement"
+                ).slice(0, 60);
+
+
+            const languageName =
+                languageDisplayName(
+                    language
+                );
+
+
+            const safeCurrent = {
+
+                score:
+                    safeNumber(
+                        current.score
+                    ),
+
+                reps:
+                    safeNumber(
+                        current.reps
+                    ),
+
+                correctReps:
+                    safeNumber(
+                        current.correctReps
+                    ),
+
+                corrections:
+                    safeNumber(
+                        current.corrections
+                    ),
+
+                duration:
+                    safeNumber(
+                        current.duration
+                    )
+            };
+
+
+            const safePrevious =
+                previous &&
+                typeof previous === "object"
+
+                    ? {
+
+                        score:
+                            safeNumber(
+                                previous.score
+                            ),
+
+                        reps:
+                            safeNumber(
+                                previous.reps
+                            ),
+
+                        correctReps:
+                            safeNumber(
+                                previous.correctReps
+                            ),
+
+                        corrections:
+                            safeNumber(
+                                previous.corrections
+                            )
+
+                    }
+
+                    : null;
+
+
+            const prompt = `
 You are a personalized AI fitness coach inside a movement-training app.
 
 Exercise: ${safeExercise}
@@ -449,62 +1068,161 @@ Rules:
 }
 `;
 
-        const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            config: { responseMimeType: "application/json" }
-        });
 
-        const result = parseGeminiJSON(response.text);
+            const response =
+                await ai.models.generateContent({
 
-        return res.json({
-            success: true,
-            summary: String(result.summary || "Session analyzed."),
-            recommendation: String(result.recommendation || "Keep practicing consistently."),
-            focusArea: result.focusArea ? String(result.focusArea) : null
-        });
+                    model: GEMINI_MODEL,
 
-    } catch (error) {
-        console.error("Coach recommendation error:", error);
-        return res.status(500).json({ success: false, error: error.message || "Coach recommendation failed." });
+                    contents: [
+                        {
+                            role: "user",
+                            parts: [
+                                {
+                                    text: prompt
+                                }
+                            ]
+                        }
+                    ],
+
+                    config: {
+                        responseMimeType:
+                            "application/json"
+                    }
+                });
+
+
+            const result =
+                parseGeminiJSON(
+                    response.text
+                );
+
+
+            return res.json({
+
+                success: true,
+
+                summary:
+                    String(
+                        result.summary ||
+                        "Session analyzed."
+                    ),
+
+                recommendation:
+                    String(
+                        result.recommendation ||
+                        "Keep practicing consistently."
+                    ),
+
+                focusArea:
+                    result.focusArea
+                        ? String(
+                            result.focusArea
+                        )
+                        : null
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "Coach recommendation error:",
+                error
+            );
+
+
+            const classified =
+                classifyGeminiError(
+                    error
+                );
+
+
+            return res.status(
+                classified.status
+            ).json({
+
+                success: false,
+
+                error:
+                    classified.error
+            });
+        }
     }
-});
+);
 
 
 /* =========================================================
    AI COACH CHAT
-   Accepts an optional `context` object (current exercise,
-   last form score, current page) so the chatbot, camera and
-   voice coach behave like one multimodal assistant instead of
-   separate features.
 ========================================================= */
 
-app.post("/api/chat", async (req, res) => {
-    try {
-        if (!GEMINI_API_KEY) {
-            return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not configured." });
-        }
+app.post(
+    "/api/chat",
+    async (req, res) => {
 
-        const { context } = req.body || {};
-        const text = String(req.body?.message || "").trim().slice(0, 1000);
-        const language = sanitizeChoice(req.body?.language, ALLOWED_LANGUAGES, "en-IN");
+        try {
 
-        if (!text) {
-            return res.status(400).json({ success: false, error: "Message is required." });
-        }
+            if (!GEMINI_API_KEY) {
 
-        const languageName = languageDisplayName(language);
+                return res.status(500).json({
+                    success: false,
+                    error:
+                        "GEMINI_API_KEY is not configured."
+                });
+            }
 
-        const contextLines = context ? `
+
+            const {
+                context
+            } = req.body || {};
+
+
+            const text =
+                String(
+                    req.body?.message ||
+                    ""
+                )
+                    .trim()
+                    .slice(0, 1000);
+
+
+            const language =
+                sanitizeChoice(
+                    req.body?.language,
+                    ALLOWED_LANGUAGES,
+                    "en-IN"
+                );
+
+
+            if (!text) {
+
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        "Message is required."
+                });
+            }
+
+
+            const languageName =
+                languageDisplayName(
+                    language
+                );
+
+
+            const contextLines =
+                context
+                    ? `
 Known context from the app (only use if relevant, never claim to see things not listed here):
 - Current section of the app: ${sanitizeContextField(context.currentPage)}
 - Current training mode: ${sanitizeContextField(context.mode)}
 - Currently recognized/selected exercise: ${sanitizeContextField(context.exercise)}
 - Most recent live form score: ${context.lastFormScore ?? "unknown"}
 - Most recent AI analysis score: ${context.lastOverallScore ?? "unknown"}
-` : "";
+`
+                    : "";
 
-        const prompt = `
+
+            const prompt = `
 You are the AI Coach chat assistant inside a movement/fitness app called
 MovementCoach (dance, gym, yoga, general fitness). The app also has a live
 camera with pose tracking, rep counting and voice feedback — you are one
@@ -526,20 +1244,67 @@ Rules:
 User question: ${text}
 `;
 
-        const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
-            contents: [{ role: "user", parts: [{ text: prompt }] }]
-        });
 
-        const reply = extractText(response) || "Sorry, I couldn't generate a reply right now.";
+            const response =
+                await ai.models.generateContent({
 
-        return res.json({ success: true, reply: reply.trim() });
+                    model: GEMINI_MODEL,
 
-    } catch (error) {
-        console.error("Chat error:", error);
-        return res.status(500).json({ success: false, error: error.message || "Chat failed." });
+                    contents: [
+                        {
+                            role: "user",
+                            parts: [
+                                {
+                                    text: prompt
+                                }
+                            ]
+                        }
+                    ]
+                });
+
+
+            const reply =
+                extractText(
+                    response
+                ) ||
+                "Sorry, I couldn't generate a reply right now.";
+
+
+            return res.json({
+
+                success: true,
+
+                reply:
+                    reply.trim()
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "Chat error:",
+                error
+            );
+
+
+            const classified =
+                classifyGeminiError(
+                    error
+                );
+
+
+            return res.status(
+                classified.status
+            ).json({
+
+                success: false,
+
+                error:
+                    classified.error
+            });
+        }
     }
-});
+);
 
 
 /* =========================================================
@@ -547,102 +1312,356 @@ User question: ${text}
 ========================================================= */
 
 function extractText(response) {
+
     if (!response) return "";
+
     if (typeof response.text === "function") {
-        try { return response.text(); } catch (error) { return ""; }
+
+        try {
+            return response.text();
+        } catch (error) {
+            return "";
+        }
     }
+
     return response.text || "";
 }
 
+
 function safeNumber(value) {
+
     const n = Number(value);
-    return Number.isFinite(n) ? n : null;
+
+    return Number.isFinite(n)
+        ? n
+        : null;
 }
 
-function safeIntInRange(value, min, max) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return null;
-    return Math.max(min, Math.min(max, Math.round(n)));
+
+/* =========================================================
+   GEMINI ERROR CLASSIFICATION
+========================================================= */
+
+function classifyGeminiError(error) {
+
+    const raw =
+        String(
+            error?.message ||
+            error ||
+            ""
+        );
+
+
+    const isQuota =
+        /RESOURCE_EXHAUSTED/i.test(raw) ||
+        /"code"\s*:\s*429/.test(raw) ||
+        /quota/i.test(raw);
+
+
+    if (isQuota) {
+
+        return {
+
+            status: 429,
+
+            error:
+                "The AI service has reached its request limit for now (free-tier quota). Please wait about a minute and try again."
+        };
+    }
+
+
+    const isInvalidModel =
+        /not found|is not supported|invalid model/i.test(
+            raw
+        );
+
+
+    if (isInvalidModel) {
+
+        return {
+
+            status: 500,
+
+            error:
+                "The configured Gemini model is unavailable. Check the GEMINI_MODEL value in your .env file."
+        };
+    }
+
+
+    return {
+
+        status: 500,
+
+        error:
+            "The AI service could not complete this request. Please try again in a moment."
+    };
 }
+
+
+function safeIntInRange(
+    value,
+    min,
+    max
+) {
+
+    const n =
+        Number(value);
+
+
+    if (!Number.isFinite(n)) {
+        return null;
+    }
+
+
+    return Math.max(
+        min,
+        Math.min(
+            max,
+            Math.round(n)
+        )
+    );
+}
+
 
 function safeParseJointMetrics(raw) {
-    if (!raw) return null;
+
+    if (!raw) {
+        return null;
+    }
+
+
     try {
-        const parsed = JSON.parse(String(raw));
-        if (!parsed || typeof parsed !== "object") return null;
+
+        const parsed =
+            JSON.parse(
+                String(raw)
+            );
+
+
+        if (
+            !parsed ||
+            typeof parsed !== "object"
+        ) {
+            return null;
+        }
+
+
         return {
-            avgKneeAngle: safeNumber(parsed.avgKneeAngle),
-            avgElbowAngle: safeNumber(parsed.avgElbowAngle),
-            avgBackLeanAngle: safeNumber(parsed.avgBackLeanAngle)
+
+            avgKneeAngle:
+                safeNumber(
+                    parsed.avgKneeAngle
+                ),
+
+            avgElbowAngle:
+                safeNumber(
+                    parsed.avgElbowAngle
+                ),
+
+            avgBackLeanAngle:
+                safeNumber(
+                    parsed.avgBackLeanAngle
+                )
         };
+
+
     } catch (error) {
+
         return null;
     }
 }
 
+
 function sanitizeContextField(value) {
-    if (value == null) return "unknown";
-    return String(value).slice(0, 60);
+
+    if (value == null) {
+        return "unknown";
+    }
+
+    return String(value).slice(
+        0,
+        60
+    );
 }
 
-function languageDisplayName(language) {
-    if (language === "te-IN") return "Telugu";
-    if (language === "hi-IN") return "Hindi";
+
+function languageDisplayName(
+    language
+) {
+
+    if (language === "te-IN") {
+        return "Telugu";
+    }
+
+    if (language === "hi-IN") {
+        return "Hindi";
+    }
+
     return "English";
 }
 
-async function waitForFileReady(fileName) {
-    let file = await ai.files.get({ name: fileName });
+
+/* =========================================================
+   GEMINI FILE WAITING
+========================================================= */
+
+async function waitForFileReady(
+    fileName
+) {
+
+    let file =
+        await ai.files.get({
+            name: fileName
+        });
+
+
     let attempts = 0;
 
-    while (isFileProcessing(file)) {
-        attempts++;
-        if (attempts > 120) throw new Error("Video processing timed out.");
 
-        console.log("Gemini video processing:", getFileState(file));
+    while (
+        isFileProcessing(file)
+    ) {
+
+        attempts++;
+
+
+        if (attempts > 120) {
+
+            throw new Error(
+                "Video processing timed out."
+            );
+        }
+
+
+        console.log(
+            "Gemini video processing:",
+            getFileState(file)
+        );
+
+
         await sleep(5000);
 
-        file = await ai.files.get({ name: fileName });
+
+        file =
+            await ai.files.get({
+                name: fileName
+            });
     }
 
-    if (isFileFailed(file)) throw new Error("Gemini could not process the uploaded video.");
 
-    console.log("Gemini file state:", getFileState(file));
+    if (isFileFailed(file)) {
+
+        console.error(
+            "GEMINI FILE FAILED OBJECT:",
+            JSON.stringify(
+                file,
+                null,
+                2
+            )
+        );
+
+
+        const fileError =
+            file?.error?.message ||
+            file?.error ||
+            file?.state?.error?.message ||
+            file?.state?.error ||
+            file?.message ||
+            "Unknown Gemini video processing error.";
+
+
+        throw new Error(
+            `Gemini video processing failed: ${fileError}`
+        );
+    }
+
+
+    console.log(
+        "Gemini file state:",
+        getFileState(file)
+    );
+
+
     return file;
 }
 
+
 function getFileState(file) {
-    if (!file) return "";
-    if (typeof file.state === "string") return file.state;
-    if (file.state && file.state.name) return file.state.name;
+
+    if (!file) {
+        return "";
+    }
+
+
+    if (
+        typeof file.state === "string"
+    ) {
+        return file.state;
+    }
+
+
+    if (
+        file.state &&
+        file.state.name
+    ) {
+        return file.state.name;
+    }
+
+
     return "";
 }
 
+
 function isFileProcessing(file) {
-    const state = getFileState(file).toUpperCase();
-    return state === "PROCESSING" || state.includes("PROCESSING");
+
+    const state =
+        getFileState(file)
+            .toUpperCase();
+
+
+    return (
+        state === "PROCESSING" ||
+        state.includes("PROCESSING")
+    );
 }
 
+
 function isFileFailed(file) {
-    const state = getFileState(file).toUpperCase();
-    return state === "FAILED" || state.includes("FAILED");
+
+    const state =
+        getFileState(file)
+            .toUpperCase();
+
+
+    return (
+        state === "FAILED" ||
+        state.includes("FAILED")
+    );
 }
 
 
 /* =========================================================
    ANALYSIS PROMPT
-   NEW: every mistake now also asks Gemini for a concrete
-   "correction" — HOW to fix the posture, distinct from the
-   "description" of what's wrong — and the primary language
-   the person is training in is passed through so the
-   non-English translations get extra emphasis on being
-   natural and immediately usable (not literal/transliterated).
 ========================================================= */
 
-function buildAnalysisPrompt({ mode, exercise, language, hasReference, sessionMetrics }) {
-    const primaryLanguageName = languageDisplayName(language);
+function buildAnalysisPrompt({
+    mode,
+    exercise,
+    language,
+    hasReference,
+    sessionMetrics
+}) {
 
-    const referenceInstruction = hasReference ? `
+    const primaryLanguageName =
+        languageDisplayName(
+            language
+        );
+
+
+    const referenceInstruction =
+        hasReference
+
+            ? `
 You have TWO videos.
 VIDEO 1 = REFERENCE / TEACHER PERFORMANCE.
 VIDEO 2 = USER PRACTICE PERFORMANCE.
@@ -655,22 +1674,39 @@ Pay special attention to:
 - timing, movement range, balance, symmetry, overall coordination
 
 Identify specific differences rather than generic advice.
-` : `
+`
+
+            : `
 There is no reference video.
 Analyze the user's movement using appropriate technique and posture
 expectations for the selected exercise.
 `;
 
-    /* ---- NEW: Feature 5 — on-device sensor evidence block.
-       This is what turns the pipeline into "Computer Vision + Sensor
-       Data + Generative AI" instead of "upload video, ask Gemini".
-       Explicitly framed as supporting evidence, not ground truth,
-       so Gemini still bases mistakes on what it actually sees. ---- */
-    const metrics = sessionMetrics || {};
-    const joint = metrics.jointMetrics || {};
-    const hasAnyMetric = [metrics.reps, metrics.correctReps, metrics.corrections, metrics.liveFormScore, metrics.recognitionConfidence].some(v => v != null);
 
-    const sensorEvidenceBlock = hasAnyMetric ? `
+    const metrics =
+        sessionMetrics || {};
+
+
+    const joint =
+        metrics.jointMetrics || {};
+
+
+    const hasAnyMetric =
+        [
+            metrics.reps,
+            metrics.correctReps,
+            metrics.corrections,
+            metrics.liveFormScore,
+            metrics.recognitionConfidence
+        ].some(
+            value => value != null
+        );
+
+
+    const sensorEvidenceBlock =
+        hasAnyMetric
+
+            ? `
 ON-DEVICE SENSOR DATA (from real-time MediaPipe pose tracking during
 this exact recording — use this as SUPPORTING EVIDENCE alongside what
 you see in the video, not as a replacement for watching it):
@@ -690,10 +1726,13 @@ count, look specifically for the form breakdown that would explain it).
 Do NOT treat these numbers as facts to restate blindly — verify against
 the actual video. If the video contradicts the sensor data, trust the
 video and mention the discrepancy is possible due to tracking noise.
-` : `
+`
+
+            : `
 No on-device sensor metrics were provided for this session (older
 client or metrics unavailable) — analyze from the video alone.
 `;
+
 
     return `
 You are an expert AI movement coach.
@@ -715,14 +1754,16 @@ identify the body part whenever possible, e.g. "Left arm position",
 "Foot placement", "Timing", "Body balance".
 
 For EVERY mistake you must provide TWO separate pieces of feedback:
+
 1. "description" — WHAT is wrong, in plain observational terms.
+
 2. "correction" — HOW to fix it. A short, concrete, actionable instruction
-   the person can apply on their very next repetition (e.g. "Push your
-   hips back and bend your knees until your thighs are closer to
-   parallel with the floor, keeping your heels flat." or "Draw your
-   elbow back so it stays under your shoulder instead of drifting
-   forward."). Never repeat the description as the correction — the
-   correction must be an instruction, not a restatement of the problem.
+the person can apply on their very next repetition (e.g. "Push your
+hips back and bend your knees until your thighs are closer to
+parallel with the floor, keeping your heels flat." or "Draw your
+elbow back so it stays under your shoulder instead of drifting
+forward."). Never repeat the description as the correction — the
+correction must be an instruction, not a restatement of the problem.
 
 SCORING:
 100 = extremely close to the reference / excellent technique.
@@ -738,7 +1779,12 @@ Return ONLY valid JSON. Use exactly this structure:
   "score": 0,
   "title": "Short result title",
   "feedback": "Short overall coaching summary.",
-  "breakdown": { "left": 0, "right": 0, "upper": 0, "lower": 0 },
+  "breakdown": {
+    "left": 0,
+    "right": 0,
+    "upper": 0,
+    "lower": 0
+  },
   "mistakes": [
     {
       "id": 1,
@@ -750,21 +1796,55 @@ Return ONLY valid JSON. Use exactly this structure:
     }
   ],
   "translations": {
-    "en": { "summary": "Good progress. Focus on your left arm position.", "mistakes": [{ "title": "Left arm position", "description": "Your left arm is lower than the reference.", "correction": "Raise your left arm to shoulder height so it matches your right arm." }] },
-    "te": { "summary": "మీ కదలిక బాగుంది. మీ ఎడమ చేతి స్థానంపై దృష్టి పెట్టండి.", "mistakes": [{ "title": "ఎడమ చేయి స్థానం", "description": "రిఫరెన్స్‌తో పోలిస్తే మీ ఎడమ చేయి కిందగా ఉంది.", "correction": "మీ ఎడమ చేతిని భుజం ఎత్తుకు లేపండి, అది కుడి చేతితో సరిపోలేలా ఉంచండి." }] },
-    "hi": { "summary": "आपकी मूवमेंट अच्छी है। अपने बाएं हाथ की स्थिति पर ध्यान दें।", "mistakes": [{ "title": "बाएं हाथ की स्थिति", "description": "रेफरेंस की तुलना में आपका बायां हाथ नीचे है।", "correction": "अपने बाएं हाथ को कंधे की ऊँचाई तक उठाएं ताकि यह दाएं हाथ जैसा दिखे।" }] }
+    "en": {
+      "summary": "Good progress. Focus on your left arm position.",
+      "mistakes": [
+        {
+          "title": "Left arm position",
+          "description": "Your left arm is lower than the reference.",
+          "correction": "Raise your left arm to shoulder height so it matches your right arm."
+        }
+      ]
+    },
+
+    "te": {
+      "summary": "మీ కదలిక బాగుంది. మీ ఎడమ చేతి స్థానంపై దృష్టి పెట్టండి.",
+      "mistakes": [
+        {
+          "title": "ఎడమ చేయి స్థానం",
+          "description": "రిఫరెన్స్‌తో పోలిస్తే మీ ఎడమ చేయి కిందగా ఉంది.",
+          "correction": "మీ ఎడమ చేతిని భుజం ఎత్తుకు లేపండి, అది కుడి చేతితో సరిపోలేలా ఉంచండి."
+        }
+      ]
+    },
+
+    "hi": {
+      "summary": "आपकी मूवमेंट अच्छी है। अपने बाएं हाथ की स्थिति पर ध्यान दें।",
+      "mistakes": [
+        {
+          "title": "बाएं हाथ की स्थिति",
+          "description": "रेफरेंस की तुलना में आपका बायां हाथ नीचे है।",
+          "correction": "अपने बाएं हाथ को कंधे की ऊँचाई तक उठाएं ताकि यह दाएं हाथ जैसा दिखे।"
+        }
+      ]
+    }
   }
 }
 
 TRANSLATION RULES:
 The Telugu version must be natural, spoken-friendly Telugu. The Hindi
 version must be natural, spoken-friendly Hindi. Do not transliterate
-Telugu or Hindi into English letters. The English, Telugu and Hindi
-"description" fields must describe the SAME mistake, and the "correction"
-fields must all give the SAME fix. Keep every field concise enough to be
-spoken aloud in 2-3 seconds. Since the user's primary language is
-${primaryLanguageName}, make sure that specific translation is especially
-clear and natural — it is the one most likely to be spoken to the user.
+Telugu or Hindi into English letters.
+
+The English, Telugu and Hindi "description" fields must describe the
+SAME mistake, and the "correction" fields must all give the SAME fix.
+
+Keep every field concise enough to be spoken aloud in 2-3 seconds.
+
+Since the user's primary language is ${primaryLanguageName}, make sure that
+specific translation is especially clear and natural — it is the one most
+likely to be spoken to the user.
+
 Return no markdown. Return JSON only.
 `;
 }
@@ -774,8 +1854,18 @@ Return no markdown. Return JSON only.
    FITNESS PLAN PROMPT
 ========================================================= */
 
-function buildFitnessPlanPrompt({ goal, level, mode, language }) {
-    const languageName = languageDisplayName(language);
+function buildFitnessPlanPrompt({
+    goal,
+    level,
+    mode,
+    language
+}) {
+
+    const languageName =
+        languageDisplayName(
+            language
+        );
+
 
     return `
 You are a fitness coaching assistant inside a movement-training app.
@@ -793,12 +1883,25 @@ Include rest/recovery guidance appropriate to the level.
 Return ONLY valid JSON using exactly this structure:
 
 {
-  "daily": [{ "title": "Warm-up", "detail": "5 minutes of light walking or marching in place." }],
-  "weekly": [{ "day": "Monday", "detail": "Full-body light movement session, 20-25 minutes." }],
+  "daily": [
+    {
+      "title": "Warm-up",
+      "detail": "5 minutes of light walking or marching in place."
+    }
+  ],
+
+  "weekly": [
+    {
+      "day": "Monday",
+      "detail": "Full-body light movement session, 20-25 minutes."
+    }
+  ],
+
   "recovery": "Short paragraph of rest/recovery guidance appropriate for this level."
 }
 
 Provide 4-6 "daily" items and 5-7 "weekly" items (one per day is fine).
+
 Return no markdown, JSON only.
 `;
 }
@@ -809,26 +1912,74 @@ Return no markdown, JSON only.
 ========================================================= */
 
 function normalizeFitnessPlan(result) {
-    result = result && typeof result === "object" ? result : {};
 
-    const daily = Array.isArray(result.daily)
-        ? result.daily.slice(0, 10).map(item => ({
-            title: String(item?.title || "Exercise"),
-            detail: String(item?.detail || item?.description || "")
-        }))
-        : [];
+    result =
+        result &&
+        typeof result === "object"
+            ? result
+            : {};
 
-    const weekly = Array.isArray(result.weekly)
-        ? result.weekly.slice(0, 10).map(item => ({
-            day: String(item?.day || item?.title || "Day"),
-            detail: String(item?.detail || item?.description || "")
-        }))
-        : [];
+
+    const daily =
+        Array.isArray(result.daily)
+
+            ? result.daily
+                .slice(0, 10)
+                .map(item => ({
+
+                    title:
+                        String(
+                            item?.title ||
+                            "Exercise"
+                        ),
+
+                    detail:
+                        String(
+                            item?.detail ||
+                            item?.description ||
+                            ""
+                        )
+                }))
+
+            : [];
+
+
+    const weekly =
+        Array.isArray(result.weekly)
+
+            ? result.weekly
+                .slice(0, 10)
+                .map(item => ({
+
+                    day:
+                        String(
+                            item?.day ||
+                            item?.title ||
+                            "Day"
+                        ),
+
+                    detail:
+                        String(
+                            item?.detail ||
+                            item?.description ||
+                            ""
+                        )
+                }))
+
+            : [];
+
 
     return {
+
         daily,
+
         weekly,
-        recovery: String(result.recovery || "Rest at least one day between intense sessions and stop if you feel pain or dizziness.")
+
+        recovery:
+            String(
+                result.recovery ||
+                "Rest at least one day between intense sessions and stop if you feel pain or dizziness."
+            )
     };
 }
 
@@ -838,77 +1989,228 @@ function normalizeFitnessPlan(result) {
 ========================================================= */
 
 function parseGeminiJSON(text) {
-    if (!text) throw new Error("Gemini returned an empty response.");
 
-    let cleaned = String(text).trim();
+    if (!text) {
+        throw new Error(
+            "Gemini returned an empty response."
+        );
+    }
 
-    cleaned = cleaned
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
+
+    let cleaned =
+        String(text).trim();
+
+
+    cleaned =
+        cleaned
+            .replace(
+                /^```json\s*/i,
+                ""
+            )
+            .replace(
+                /^```\s*/i,
+                ""
+            )
+            .replace(
+                /\s*```$/i,
+                ""
+            )
+            .trim();
+
 
     try {
-        return JSON.parse(cleaned);
-    } catch (firstError) {
-        const start = cleaned.indexOf("{");
-        const end = cleaned.lastIndexOf("}");
 
-        if (start >= 0 && end > start) {
-            const possibleJSON = cleaned.slice(start, end + 1);
+        return JSON.parse(
+            cleaned
+        );
+
+    } catch (firstError) {
+
+        const start =
+            cleaned.indexOf("{");
+
+        const end =
+            cleaned.lastIndexOf("}");
+
+
+        if (
+            start >= 0 &&
+            end > start
+        ) {
+
+            const possibleJSON =
+                cleaned.slice(
+                    start,
+                    end + 1
+                );
+
+
             try {
-                return JSON.parse(possibleJSON);
+
+                return JSON.parse(
+                    possibleJSON
+                );
+
             } catch (secondError) {
-                throw new Error("Gemini returned invalid JSON.");
+
+                throw new Error(
+                    "Gemini returned invalid JSON."
+                );
             }
         }
 
-        throw new Error("Gemini returned invalid JSON.");
+
+        throw new Error(
+            "Gemini returned invalid JSON."
+        );
     }
 }
 
 
 /* =========================================================
    NORMALIZE SERVER RESULT
-   NEW: threads the "correction" field through mistakes and
-   every translation bucket, with safe fallbacks so the UI
-   never breaks if Gemini omits it.
 ========================================================= */
 
-function normalizeServerResult(result) {
-    result = result && typeof result === "object" ? result : {};
+function normalizeServerResult(
+    result
+) {
 
-    const score = clampScore(result.score);
-    const breakdown = result.breakdown || {};
+    result =
+        result &&
+        typeof result === "object"
+            ? result
+            : {};
+
+
+    const score =
+        clampScore(
+            result.score
+        );
+
+
+    const breakdown =
+        result.breakdown || {};
+
 
     const normalizedBreakdown = {
-        left: clampScore(breakdown.left ?? score),
-        right: clampScore(breakdown.right ?? score),
-        upper: clampScore(breakdown.upper ?? score),
-        lower: clampScore(breakdown.lower ?? score)
+
+        left:
+            clampScore(
+                breakdown.left ??
+                score
+            ),
+
+        right:
+            clampScore(
+                breakdown.right ??
+                score
+            ),
+
+        upper:
+            clampScore(
+                breakdown.upper ??
+                score
+            ),
+
+        lower:
+            clampScore(
+                breakdown.lower ??
+                score
+            )
     };
 
-    const mistakes = Array.isArray(result.mistakes)
-        ? result.mistakes.slice(0, 10).map((mistake, index) => {
-            const time = Number(mistake?.time) || 0;
-            return {
-                id: mistake?.id ?? index + 1,
-                time: Math.max(0, time),
-                timestamp: mistake?.timestamp || formatTime(time),
-                title: String(mistake?.title || `Movement issue ${index + 1}`),
-                description: String(mistake?.description || "Movement needs improvement."),
-                correction: String(mistake?.correction || mistake?.fix || "Slow down and repeat the movement with careful control, focusing on this area.")
-            };
-        })
-        : [];
+
+    const mistakes =
+        Array.isArray(result.mistakes)
+
+            ? result.mistakes
+                .slice(0, 10)
+                .map(
+                    (
+                        mistake,
+                        index
+                    ) => {
+
+                        const time =
+                            Number(
+                                mistake?.time
+                            ) || 0;
+
+
+                        return {
+
+                            id:
+                                mistake?.id ??
+                                index + 1,
+
+                            time:
+                                Math.max(
+                                    0,
+                                    time
+                                ),
+
+                            timestamp:
+                                mistake?.timestamp ||
+                                formatTime(time),
+
+                            title:
+                                String(
+                                    mistake?.title ||
+                                    `Movement issue ${index + 1}`
+                                ),
+
+                            description:
+                                String(
+                                    mistake?.description ||
+                                    "Movement needs improvement."
+                                ),
+
+                            correction:
+                                String(
+                                    mistake?.correction ||
+                                    mistake?.fix ||
+                                    "Slow down and repeat the movement with careful control, focusing on this area."
+                                )
+                        };
+                    }
+                )
+
+            : [];
+
 
     return {
+
         score,
-        title: String(result.title || (score >= 90 ? "Excellent movement" : score >= 75 ? "Good progress" : "Keep practicing")),
-        feedback: String(result.feedback || "Review the highlighted movement corrections."),
-        breakdown: normalizedBreakdown,
+
+        title:
+            String(
+                result.title ||
+                (
+                    score >= 90
+                        ? "Excellent movement"
+                        : score >= 75
+                            ? "Good progress"
+                            : "Keep practicing"
+                )
+            ),
+
+        feedback:
+            String(
+                result.feedback ||
+                "Review the highlighted movement corrections."
+            ),
+
+        breakdown:
+            normalizedBreakdown,
+
         mistakes,
-        translations: normalizeTranslations(result.translations, result, mistakes)
+
+        translations:
+            normalizeTranslations(
+                result.translations,
+                result,
+                mistakes
+            )
     };
 }
 
@@ -917,39 +2219,148 @@ function normalizeServerResult(result) {
    TRANSLATIONS
 ========================================================= */
 
-function normalizeTranslations(translations, result, mistakes) {
-    if (!translations || typeof translations !== "object") {
+function normalizeTranslations(
+    translations,
+    result,
+    mistakes
+) {
+
+    if (
+        !translations ||
+        typeof translations !== "object"
+    ) {
+
         return {
-            en: buildEnglishTranslation(result, mistakes),
-            te: { summary: "తెలుగు ఫీడ్‌బ్యాక్ అందుబాటులో లేదు.", mistakes: [] },
-            hi: { summary: "हिंदी फीडबैक उपलब्ध नहीं है।", mistakes: [] }
+
+            en:
+                buildEnglishTranslation(
+                    result,
+                    mistakes
+                ),
+
+            te: {
+                summary:
+                    "తెలుగు ఫీడ్‌బ్యాక్ అందుబాటులో లేదు.",
+                mistakes: []
+            },
+
+            hi: {
+                summary:
+                    "हिंदी फीडबैक उपलब्ध नहीं है।",
+                mistakes: []
+            }
         };
     }
 
+
     return {
-        en: normalizeTranslation(translations.en, result.feedback, mistakes),
-        te: normalizeTranslation(translations.te, "మీ కదలికను మెరుగుపరచడానికి సూచించిన అంశాలను పరిశీలించండి.", mistakes),
-        hi: normalizeTranslation(translations.hi, "अपनी मूवमेंट को बेहतर बनाने के लिए बताए गए सुधारों पर ध्यान दें।", mistakes)
+
+        en:
+            normalizeTranslation(
+                translations.en,
+                result.feedback,
+                mistakes
+            ),
+
+        te:
+            normalizeTranslation(
+                translations.te,
+                "మీ కదలికను మెరుగుపరచడానికి సూచించిన అంశాలను పరిశీలించండి.",
+                mistakes
+            ),
+
+        hi:
+            normalizeTranslation(
+                translations.hi,
+                "अपनी मूवमेंट को बेहतर बनाने के लिए बताए गए सुधारों पर ध्यान दें।",
+                mistakes
+            )
     };
 }
 
-function normalizeTranslation(translation, fallbackSummary, mistakes) {
+
+function normalizeTranslation(
+    translation,
+    fallbackSummary,
+    mistakes
+) {
+
     return {
-        summary: String(translation?.summary || fallbackSummary),
-        mistakes: Array.isArray(translation?.mistakes)
-            ? translation.mistakes.slice(0, mistakes.length).map((item, index) => ({
-                title: String(item?.title || mistakes[index]?.title || "Movement issue"),
-                description: String(item?.description || mistakes[index]?.description || ""),
-                correction: String(item?.correction || mistakes[index]?.correction || "")
-            }))
-            : []
+
+        summary:
+            String(
+                translation?.summary ||
+                fallbackSummary
+            ),
+
+        mistakes:
+            Array.isArray(
+                translation?.mistakes
+            )
+
+                ? translation.mistakes
+                    .slice(0, mistakes.length)
+                    .map(
+                        (
+                            item,
+                            index
+                        ) => ({
+
+                            title:
+                                String(
+                                    item?.title ||
+                                    mistakes[index]?.title ||
+                                    "Movement issue"
+                                ),
+
+                            description:
+                                String(
+                                    item?.description ||
+                                    mistakes[index]?.description ||
+                                    ""
+                                ),
+
+                            correction:
+                                String(
+                                    item?.correction ||
+                                    mistakes[index]?.correction ||
+                                    ""
+                                )
+                        })
+                    )
+
+                : []
     };
 }
 
-function buildEnglishTranslation(result, mistakes) {
+
+function buildEnglishTranslation(
+    result,
+    mistakes
+) {
+
     return {
-        summary: String(result.feedback || "Review your highlighted movement corrections."),
-        mistakes: mistakes.map(mistake => ({ title: mistake.title, description: mistake.description, correction: mistake.correction }))
+
+        summary:
+            String(
+                result.feedback ||
+                "Review your highlighted movement corrections."
+            ),
+
+        mistakes:
+            mistakes.map(
+                mistake => ({
+
+                    title:
+                        mistake.title,
+
+                    description:
+                        mistake.description,
+
+                    correction:
+                        mistake.correction
+                })
+            )
     };
 }
 
@@ -959,29 +2370,609 @@ function buildEnglishTranslation(result, mistakes) {
 ========================================================= */
 
 function clampScore(value) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return 0;
-    return Math.max(0, Math.min(100, Math.round(number)));
+
+    const number =
+        Number(value);
+
+
+    if (!Number.isFinite(number)) {
+        return 0;
+    }
+
+
+    return Math.max(
+        0,
+        Math.min(
+            100,
+            Math.round(number)
+        )
+    );
 }
+
 
 function formatTime(seconds) {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    const minutes = Math.floor(total / 60);
-    const remaining = total % 60;
-    return String(minutes).padStart(2, "0") + ":" + String(remaining).padStart(2, "0");
+
+    const total =
+        Math.max(
+            0,
+            Math.floor(
+                Number(seconds) || 0
+            )
+        );
+
+
+    const minutes =
+        Math.floor(
+            total / 60
+        );
+
+
+    const remaining =
+        total % 60;
+
+
+    return (
+        String(minutes)
+            .padStart(2, "0") +
+        ":" +
+        String(remaining)
+            .padStart(2, "0")
+    );
 }
+
 
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+
+    return new Promise(
+        resolve =>
+            setTimeout(
+                resolve,
+                ms
+            )
+    );
 }
 
+
 function cleanupFile(filePath) {
-    if (!filePath) return;
-    try {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch (error) {
-        console.warn("Could not delete file:", filePath, error.message);
+
+    if (!filePath) {
+        return;
     }
+
+
+    try {
+
+        if (
+            fs.existsSync(
+                filePath
+            )
+        ) {
+
+            fs.unlinkSync(
+                filePath
+            );
+        }
+
+    } catch (error) {
+
+        console.warn(
+            "Could not delete file:",
+            filePath,
+            error.message
+        );
+    }
+}
+
+
+/* =========================================================
+   NEW: FFMPEG VIDEO CONVERSION
+   Browser recordings are commonly WebM.
+
+   Converts:
+   WebM / MOV / AVI / MKV / etc.
+          ↓
+   H.264 MP4
+          ↓
+   Gemini
+========================================================= */
+
+function convertVideoToMp4(
+    inputPath
+) {
+
+    return new Promise(
+        (resolve, reject) => {
+
+            if (
+                !inputPath ||
+                !fs.existsSync(inputPath)
+            ) {
+
+                return reject(
+                    new Error(
+                        "Video file not found for FFmpeg conversion."
+                    )
+                );
+            }
+
+
+            const outputPath =
+                path.join(
+                    uploadDir,
+                    `gemini-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`
+                );
+
+
+            const args = [
+
+                // Overwrite output if it somehow exists.
+                "-y",
+
+                // Input file.
+                "-i",
+                inputPath,
+
+                // Use first video stream.
+                "-map",
+                "0:v:0",
+
+                // H.264 video.
+                "-c:v",
+                "libx264",
+
+                // Good speed for short practice recordings.
+                "-preset",
+                "veryfast",
+
+                // Standard pixel format.
+                "-pix_fmt",
+                "yuv420p",
+
+                // Audio is unnecessary for movement analysis.
+                // This also avoids audio codec problems.
+                "-an",
+
+                // Optimize MP4 for processing/streaming.
+                "-movflags",
+                "+faststart",
+
+                outputPath
+            ];
+
+
+            console.log("");
+            console.log(
+                "FFmpeg converting:",
+                inputPath
+            );
+
+            console.log(
+                "FFmpeg output:",
+                outputPath
+            );
+
+
+            execFile(
+                "ffmpeg",
+                args,
+                {
+                    windowsHide: true
+                },
+
+                (
+                    error,
+                    stdout,
+                    stderr
+                ) => {
+
+                    if (error) {
+
+                        console.error(
+                            "FFmpeg conversion failed:"
+                        );
+
+                        console.error(
+                            stderr ||
+                            error.message
+                        );
+
+
+                        cleanupFile(
+                            outputPath
+                        );
+
+
+                        return reject(
+                            new Error(
+                                `FFmpeg video conversion failed: ${error.message}`
+                            )
+                        );
+                    }
+
+
+                    if (
+                        !fs.existsSync(
+                            outputPath
+                        )
+                    ) {
+
+                        return reject(
+                            new Error(
+                                "FFmpeg finished but the MP4 file was not created."
+                            )
+                        );
+                    }
+
+
+                    console.log(
+                        "FFmpeg conversion complete."
+                    );
+
+
+                    resolve(
+                        outputPath
+                    );
+                }
+            );
+        }
+    );
+}
+
+
+/* =========================================================
+   FETCH A DIRECT VIDEO URL SERVER-SIDE
+========================================================= */
+
+const REMOTE_VIDEO_MAX_BYTES =
+    150 * 1024 * 1024;
+
+const REMOTE_VIDEO_TIMEOUT_MS =
+    20000;
+
+const REMOTE_VIDEO_MAX_REDIRECTS =
+    5;
+
+
+function fetchRemoteVideoToTemp(
+    rawUrl,
+    destDir,
+    redirectsLeft = REMOTE_VIDEO_MAX_REDIRECTS
+) {
+
+    return new Promise(
+        (resolve, reject) => {
+
+            let parsed;
+
+
+            try {
+
+                parsed =
+                    new URL(
+                        rawUrl
+                    );
+
+            } catch (error) {
+
+                return reject(
+                    new Error(
+                        "Invalid reference URL."
+                    )
+                );
+            }
+
+
+            if (
+                !/^https?:$/.test(
+                    parsed.protocol
+                )
+            ) {
+
+                return reject(
+                    new Error(
+                        "Only http/https URLs are supported."
+                    )
+                );
+            }
+
+
+            const client =
+                parsed.protocol === "https:"
+                    ? https
+                    : http;
+
+
+            const request =
+                client.get(
+                    parsed,
+                    {
+                        timeout:
+                            REMOTE_VIDEO_TIMEOUT_MS
+                    },
+
+                    response => {
+
+                        /* =================================================
+                           REDIRECTS
+                        ================================================= */
+
+                        if (
+                            [
+                                301,
+                                302,
+                                303,
+                                307,
+                                308
+                            ].includes(
+                                response.statusCode
+                            ) &&
+                            response.headers.location
+                        ) {
+
+                            response.resume();
+
+
+                            if (
+                                redirectsLeft <= 0
+                            ) {
+
+                                return reject(
+                                    new Error(
+                                        "Too many redirects while fetching reference URL."
+                                    )
+                                );
+                            }
+
+
+                            const nextUrl =
+                                new URL(
+                                    response.headers.location,
+                                    parsed
+                                ).toString();
+
+
+                            return resolve(
+                                fetchRemoteVideoToTemp(
+                                    nextUrl,
+                                    destDir,
+                                    redirectsLeft - 1
+                                )
+                            );
+                        }
+
+
+                        /* =================================================
+                           HTTP STATUS
+                        ================================================= */
+
+                        if (
+                            response.statusCode !== 200
+                        ) {
+
+                            response.resume();
+
+
+                            return reject(
+                                new Error(
+                                    `Reference URL returned HTTP ${response.statusCode}.`
+                                )
+                            );
+                        }
+
+
+                        /* =================================================
+                           CONTENT TYPE
+                        ================================================= */
+
+                        const contentType =
+                            String(
+                                response.headers[
+                                    "content-type"
+                                ] || ""
+                            ).toLowerCase();
+
+
+                        const looksLikeVideo =
+                            contentType.startsWith(
+                                "video/"
+                            ) ||
+                            contentType ===
+                                "application/octet-stream" ||
+                            contentType === "";
+
+
+                        if (!looksLikeVideo) {
+
+                            response.resume();
+
+
+                            return reject(
+                                new Error(
+                                    `URL did not return a video (content-type: ${contentType || "unknown"}).`
+                                )
+                            );
+                        }
+
+
+                        /* =================================================
+                           CREATE TEMP FILE
+                        ================================================= */
+
+                        const extension =
+                            path.extname(
+                                parsed.pathname
+                            ) || ".mp4";
+
+
+                        const filename =
+                            `url-ref-${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`;
+
+
+                        const destPath =
+                            path.join(
+                                destDir,
+                                filename
+                            );
+
+
+                        const writeStream =
+                            fs.createWriteStream(
+                                destPath
+                            );
+
+
+                        let bytesWritten = 0;
+                        let settled = false;
+
+
+                        /* =================================================
+                           SIZE LIMIT
+                        ================================================= */
+
+                        response.on(
+                            "data",
+                            chunk => {
+
+                                bytesWritten +=
+                                    chunk.length;
+
+
+                                if (
+                                    bytesWritten >
+                                    REMOTE_VIDEO_MAX_BYTES
+                                ) {
+
+                                    settled = true;
+
+
+                                    request.destroy();
+
+
+                                    writeStream.destroy();
+
+
+                                    cleanupFile(
+                                        destPath
+                                    );
+
+
+                                    reject(
+                                        new Error(
+                                            "Reference video URL exceeded the 150MB size limit."
+                                        )
+                                    );
+                                }
+                            }
+                        );
+
+
+                        response.pipe(
+                            writeStream
+                        );
+
+
+                        /* =================================================
+                           FINISHED
+                        ================================================= */
+
+                        writeStream.on(
+                            "finish",
+                            () => {
+
+                                if (settled) {
+                                    return;
+                                }
+
+
+                                settled = true;
+
+
+                                resolve({
+
+                                    path:
+                                        destPath,
+
+                                    filename:
+                                        path.basename(
+                                            parsed.pathname
+                                        ) || filename,
+
+                                    mimeType:
+                                        contentType.startsWith(
+                                            "video/"
+                                        )
+                                            ? contentType
+                                            : "video/mp4"
+                                });
+                            }
+                        );
+
+
+                        /* =================================================
+                           WRITE ERROR
+                        ================================================= */
+
+                        writeStream.on(
+                            "error",
+                            error => {
+
+                                if (settled) {
+                                    return;
+                                }
+
+
+                                settled = true;
+
+
+                                cleanupFile(
+                                    destPath
+                                );
+
+
+                                reject(
+                                    error
+                                );
+                            }
+                        );
+                    }
+                );
+
+
+            /* =========================================================
+               REQUEST TIMEOUT
+            ========================================================= */
+
+            request.on(
+                "timeout",
+                () => {
+
+                    request.destroy();
+
+
+                    reject(
+                        new Error(
+                            "Timed out fetching the reference video URL."
+                        )
+                    );
+                }
+            );
+
+
+            /* =========================================================
+               REQUEST ERROR
+            ========================================================= */
+
+            request.on(
+                "error",
+                error => {
+
+                    reject(
+                        error
+                    );
+                }
+            );
+        }
+    );
 }
 
 
@@ -989,30 +2980,97 @@ function cleanupFile(filePath) {
    ERROR HANDLER
 ========================================================= */
 
-app.use((error, req, res, next) => {
-    console.error("SERVER ERROR:", error);
+app.use(
+    (error, req, res, next) => {
 
-    if (error instanceof multer.MulterError) {
-        return res.status(400).json({ success: false, error: error.message });
+        console.error(
+            "SERVER ERROR:",
+            error
+        );
+
+
+        if (
+            error instanceof
+            multer.MulterError
+        ) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                error:
+                    error.message
+            });
+        }
+
+
+        return res.status(500).json({
+
+            success: false,
+
+            error:
+                error.message ||
+                "Server error."
+        });
     }
-
-    return res.status(500).json({ success: false, error: error.message || "Server error." });
-});
+);
 
 
 /* =========================================================
    START SERVER
 ========================================================= */
 
-app.listen(PORT, "0.0.0.0", () => {
-    console.log("");
-    console.log("========================================");
-    console.log("       AI MOVEMENT COACH BACKEND");
-    console.log("========================================");
-    console.log(`Server: http://localhost:${PORT}`);
-    console.log(`Model: ${GEMINI_MODEL}`);
-    console.log(`Gemini key: ${GEMINI_API_KEY ? "CONFIGURED" : "MISSING"}`);
-    console.log("Endpoints: /api/health /api/analyze /api/fitness-plan /api/coach-recommendation /api/chat");
-    console.log("========================================");
-    console.log("");
-});
+app.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+
+        console.log("");
+
+        console.log(
+            "========================================"
+        );
+
+        console.log(
+            "       AI MOVEMENT COACH BACKEND"
+        );
+
+        console.log(
+            "========================================"
+        );
+
+        console.log(
+            `Server: http://localhost:${PORT}`
+        );
+
+        console.log(
+            `Model: ${GEMINI_MODEL}`
+        );
+
+        console.log(
+            `Gemini key: ${
+                GEMINI_API_KEY
+                    ? "CONFIGURED"
+                    : "MISSING"
+            }`
+        );
+
+        console.log(
+            "FFmpeg: ENABLED"
+        );
+
+        console.log(
+            "Video pipeline: Browser WebM → H.264 MP4 → Gemini"
+        );
+
+        console.log(
+            "Endpoints: /api/health /api/analyze /api/fitness-plan /api/coach-recommendation /api/chat"
+        );
+
+        console.log(
+            "========================================"
+        );
+
+        console.log("");
+    }
+);

@@ -17,6 +17,13 @@ const state = {
     recordingURL: null,
     referenceURL: null,
     referenceFile: null,
+    /* ---- NEW: reference video can now come from a pasted link, not
+       just a file upload. sourceType tracks which playback path is
+       active so every downstream function (studio preview, recording
+       sync, Gemini upload) knows how to handle it. ---- */
+    referenceSourceType: "file", // "file" | "url" | "youtube" | "instagram"
+    youtubeVideoId: null,
+    studioYoutubePlayer: null,
 
     isRecording: false,
     isCountingDown: false,
@@ -460,6 +467,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupNavigation();
     setupModeButtons();
     setupSetupControls();
+    setupUrlReferenceUI();
     setupStudioControls();
     setupMobileMenu();
     setupFeedbackVoice();
@@ -673,17 +681,24 @@ function handleReferenceVideo(file) {
         return;
     }
 
-    if (state.referenceURL) URL.revokeObjectURL(state.referenceURL);
+    if (state.referenceURL && state.referenceSourceType === "file") URL.revokeObjectURL(state.referenceURL);
+    resetReferenceEmbeds();
 
     state.referenceFile = file;
     state.referenceURL = URL.createObjectURL(file);
+    state.referenceSourceType = "file";
+    state.youtubeVideoId = null;
 
-    $("referenceVideo").src = state.referenceURL;
+    const video = $("referenceVideo");
+    video.classList.remove("hidden");
+    video.src = state.referenceURL;
     $("videoName").textContent = file.name;
+    $("videoDuration").textContent = "Ready";
     $("uploadZone").classList.add("hidden");
     $("videoPreview").classList.remove("hidden");
 
-    $("referenceVideo").addEventListener("loadedmetadata", updateReferenceDuration, { once: true });
+    video.addEventListener("loadedmetadata", updateReferenceDuration, { once: true });
+    if ($("referenceUrlInput")) $("referenceUrlInput").value = "";
     showToast("Reference video loaded.");
 }
 
@@ -692,19 +707,169 @@ function updateReferenceDuration() {
     $("videoDuration").textContent = Number.isFinite(video.duration) ? formatTime(video.duration) : "Ready";
 }
 
+/* =========================================================
+   NEW: REFERENCE VIDEO BY LINK (YouTube / Instagram / direct URL)
+   Browsers cannot play a YouTube or Instagram page URL through a
+   native <video> tag — those platforms only allow playback through
+   their own embed players, and neither exposes a way to download
+   the underlying file (Instagram has no public playback-control API
+   at all; scraping YouTube's stream violates its ToS and breaks
+   constantly). So this is built honestly in three tiers:
+     - direct video file URL (.mp4 etc.)  -> full support, identical
+       to file upload, including Gemini comparison (fetched server-side)
+     - YouTube link                       -> embedded + controllable
+       for live visual reference only; NOT sent to Gemini
+     - Instagram link                     -> preview embed only, no
+       playback control, NOT sent to Gemini
+========================================================= */
+
+const YOUTUBE_URL_RE = /(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{6,})/i;
+const INSTAGRAM_URL_RE = /instagram\.com\/(?:reel|p|tv)\/([A-Za-z0-9_-]+)/i;
+const DIRECT_VIDEO_RE = /\.(mp4|webm|ogg|ogv|mov|m4v)(\?.*)?$/i;
+
+function classifyReferenceUrl(rawUrl) {
+    let url;
+    try {
+        url = new URL(rawUrl.trim());
+    } catch (error) {
+        return { type: "invalid" };
+    }
+    if (!/^https?:$/.test(url.protocol)) return { type: "invalid" };
+
+    const youtubeMatch = rawUrl.match(YOUTUBE_URL_RE);
+    if (youtubeMatch) return { type: "youtube", id: youtubeMatch[1], url: rawUrl.trim() };
+
+    const instagramMatch = rawUrl.match(INSTAGRAM_URL_RE);
+    if (instagramMatch) return { type: "instagram", id: instagramMatch[1], url: rawUrl.trim() };
+
+    if (DIRECT_VIDEO_RE.test(url.pathname)) return { type: "direct", url: rawUrl.trim() };
+
+    // Unknown host/path shape — still allow it as a best-effort direct link,
+    // since some CDNs serve video without a file-extension in the path.
+    return { type: "direct", url: rawUrl.trim() };
+}
+
+function setupUrlReferenceUI() {
+    $("loadUrlBtn")?.addEventListener("click", () => {
+        const raw = $("referenceUrlInput")?.value || "";
+        if (!raw.trim()) {
+            showToast("Paste a video link first.");
+            return;
+        }
+        loadReferenceFromUrl(raw.trim());
+    });
+
+    $("referenceUrlInput")?.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            $("loadUrlBtn")?.click();
+        }
+    });
+}
+
+function resetReferenceEmbeds() {
+    const embedWrap = $("referenceEmbedWrap");
+    const embedFrame = $("referenceEmbedFrame");
+    if (embedFrame) embedFrame.src = "";
+    embedWrap?.classList.add("hidden");
+    $("referenceVideo")?.classList.remove("hidden");
+}
+
+function loadReferenceFromUrl(rawUrl) {
+    const classified = classifyReferenceUrl(rawUrl);
+
+    if (classified.type === "invalid") {
+        showToast("That doesn't look like a valid video link.");
+        return;
+    }
+
+    // Clear any existing file-based reference first (this REPLACES the
+    // current reference, it doesn't stack with file upload).
+    if (state.referenceURL && state.referenceSourceType === "file") {
+        URL.revokeObjectURL(state.referenceURL);
+    }
+    state.referenceFile = null;
+    resetReferenceEmbeds();
+
+    if (classified.type === "youtube") {
+        state.referenceSourceType = "youtube";
+        state.youtubeVideoId = classified.id;
+        state.referenceURL = classified.url;
+
+        $("referenceVideo").classList.add("hidden");
+        const embedWrap = $("referenceEmbedWrap");
+        const embedFrame = $("referenceEmbedFrame");
+        embedFrame.src = `https://www.youtube.com/embed/${classified.id}?enablejsapi=1&playsinline=1`;
+        embedWrap.classList.remove("hidden");
+
+        $("videoName").textContent = "YouTube reference";
+        $("videoDuration").textContent = "Preview only \u2014 not sent to Gemini";
+        $("uploadZone").classList.add("hidden");
+        $("videoPreview").classList.remove("hidden");
+        showToast("YouTube reference loaded. It will play during practice but won't be included in the Gemini comparison.");
+
+    } else if (classified.type === "instagram") {
+        state.referenceSourceType = "instagram";
+        state.referenceURL = classified.url;
+        state.youtubeVideoId = null;
+
+        $("referenceVideo").classList.add("hidden");
+        const embedWrap = $("referenceEmbedWrap");
+        const embedFrame = $("referenceEmbedFrame");
+        // Instagram has no public embeddable player URL without their
+        // widget script + approval; show a clear, honest message instead
+        // of a broken iframe.
+        embedFrame.src = "";
+        embedWrap.classList.add("hidden");
+
+        $("videoName").textContent = "Instagram reference";
+        $("videoDuration").textContent = "Link saved \u2014 preview unavailable";
+        $("uploadZone").classList.add("hidden");
+        $("videoPreview").classList.remove("hidden");
+        showToast("Instagram links can't be embedded or auto-played in-browser. The link is saved for your own reference, but won't play here or reach Gemini \u2014 consider downloading the clip and uploading it as a file instead.");
+
+    } else {
+        // Direct video file URL — behaves exactly like a file upload.
+        state.referenceSourceType = "url";
+        state.referenceURL = classified.url;
+        state.youtubeVideoId = null;
+
+        const video = $("referenceVideo");
+        video.classList.remove("hidden");
+        video.src = classified.url;
+        $("videoName").textContent = "Linked reference video";
+        $("videoDuration").textContent = "Loading\u2026";
+        $("uploadZone").classList.add("hidden");
+        $("videoPreview").classList.remove("hidden");
+        video.addEventListener("loadedmetadata", updateReferenceDuration, { once: true });
+        video.addEventListener("error", () => {
+            showToast("Couldn't load that video link \u2014 check the URL is a direct, publicly accessible video file.");
+        }, { once: true });
+        showToast("Reference video link loaded.");
+    }
+
+    if ($("referenceUrlInput")) $("referenceUrlInput").value = "";
+}
+
 function removeReferenceVideo() {
     const video = $("referenceVideo");
     video.pause();
     video.removeAttribute("src");
     video.load();
 
-    if (state.referenceURL) {
+    if (state.referenceURL && state.referenceSourceType === "file") {
         URL.revokeObjectURL(state.referenceURL);
-        state.referenceURL = null;
     }
 
+    state.referenceURL = null;
     state.referenceFile = null;
+    state.referenceSourceType = "file";
+    state.youtubeVideoId = null;
+
+    resetReferenceEmbeds();
+
     $("videoInput").value = "";
+    if ($("referenceUrlInput")) $("referenceUrlInput").value = "";
     $("videoPreview").classList.add("hidden");
     $("uploadZone").classList.remove("hidden");
     showToast("Reference video removed.");
@@ -716,8 +881,8 @@ function removeReferenceVideo() {
 ========================================================= */
 
 async function openStudio() {
-    if (state.selectedMode === "dance" && !state.referenceFile) {
-        showToast("Upload a reference video first.");
+    if (state.selectedMode === "dance" && !state.referenceURL) {
+        showToast("Add a reference video first (upload a file or paste a link).");
         return;
     }
 
@@ -769,6 +934,20 @@ async function startCamera() {
     cameraVideo.srcObject = stream;
     cameraVideo.muted = true;
     await cameraVideo.play();
+
+    /* ---- FIX: the "mirror" class (CSS scaleX(-1)) was hardcoded in the
+       HTML on both the camera video AND the pose canvas, so the REAR
+       camera was also flipped — showing the world backwards, unlike a
+       normal phone camera. A mirror only makes sense for the FRONT
+       (selfie) camera, where users expect to see themselves as in a
+       mirror. The back camera should show the world exactly as the lens
+       sees it. Both the video and the skeleton-overlay canvas must be
+       toggled together, or the skeleton would visually misalign with
+       the person's body whenever mirroring differs between the two. ---- */
+    const shouldMirror = state.selectedCamera !== "back";
+    const poseCanvasEl = $("poseCanvas");
+    cameraVideo.classList.toggle("mirror", shouldMirror);
+    if (poseCanvasEl) poseCanvasEl.classList.toggle("mirror", shouldMirror);
 
     $("cameraEmpty").classList.add("hidden");
     $("cameraStatus").textContent = "READY";
@@ -1825,10 +2004,19 @@ const REFERENCE_FULL_VOLUME = 1;
 
 function speakWithReferenceDucking(text, language) {
     const reference = $("studioReference");
-    const isReferencePlaying = reference && !reference.paused && !reference.classList.contains("hidden");
+    const isNativeReferencePlaying = reference && !reference.paused && !reference.classList.contains("hidden");
 
-    if (isReferencePlaying) {
+    /* ---- NEW: duck the YouTube player's volume too, using the same
+       IFrame API used for play/pause control. setVolume expects 0-100,
+       unlike the native <video> element's 0-1 range. ---- */
+    const ytPlayer = state.referenceSourceType === "youtube" ? state.studioYoutubePlayer : null;
+    const isYoutubePlaying = ytPlayer && typeof ytPlayer.getPlayerState === "function" && ytPlayer.getPlayerState() === 1;
+
+    if (isNativeReferencePlaying) {
         reference.volume = REFERENCE_DUCK_VOLUME;
+    }
+    if (isYoutubePlaying && typeof ytPlayer.setVolume === "function") {
+        try { ytPlayer.setVolume(Math.round(REFERENCE_DUCK_VOLUME * 100)); } catch (error) { console.warn(error); }
     }
 
     speakText(text, language, () => {
@@ -1836,6 +2024,9 @@ function speakWithReferenceDucking(text, language) {
         // but only if the user hasn't since stopped/hidden the reference video.
         if (reference && !reference.classList.contains("hidden")) {
             reference.volume = REFERENCE_FULL_VOLUME;
+        }
+        if (state.referenceSourceType === "youtube" && state.studioYoutubePlayer && typeof state.studioYoutubePlayer.setVolume === "function") {
+            try { state.studioYoutubePlayer.setVolume(Math.round(REFERENCE_FULL_VOLUME * 100)); } catch (error) { console.warn(error); }
         }
     });
 }
@@ -1845,20 +2036,116 @@ function speakWithReferenceDucking(text, language) {
    REFERENCE STUDIO
 ========================================================= */
 
+/* =========================================================
+   NEW: YOUTUBE IFRAME PLAYER API (studio playback control)
+   Only loaded when actually needed. Gives us play()/pause()/mute()/
+   seekTo() control over an embedded YouTube reference during
+   recording, mirroring what the native <video> element already does
+   for file/url references — so beginRecording()/stopPractice() don't
+   need separate code paths beyond a type check.
+========================================================= */
+
+let youtubeApiLoadPromise = null;
+
+function loadYoutubeIframeApi() {
+    if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
+    if (youtubeApiLoadPromise) return youtubeApiLoadPromise;
+
+    youtubeApiLoadPromise = new Promise((resolve, reject) => {
+        const previousCallback = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => {
+            if (typeof previousCallback === "function") previousCallback();
+            resolve(window.YT);
+        };
+
+        const script = document.createElement("script");
+        script.src = "https://www.youtube.com/iframe_api";
+        script.onerror = () => reject(new Error("Failed to load YouTube IFrame API"));
+        document.head.appendChild(script);
+
+        setTimeout(() => reject(new Error("YouTube API load timed out")), 10000);
+    });
+
+    return youtubeApiLoadPromise;
+}
+
+function destroyStudioYoutubePlayer() {
+    if (state.studioYoutubePlayer && typeof state.studioYoutubePlayer.destroy === "function") {
+        try { state.studioYoutubePlayer.destroy(); } catch (error) { console.warn(error); }
+    }
+    state.studioYoutubePlayer = null;
+    const wrap = $("studioReferenceEmbedWrap");
+    if (wrap) wrap.innerHTML = "";
+}
+
+async function setupStudioYoutubePlayer(videoId) {
+    const wrap = $("studioReferenceEmbedWrap");
+    if (!wrap) return;
+
+    destroyStudioYoutubePlayer();
+    wrap.innerHTML = "";
+    const mount = document.createElement("div");
+    mount.id = "studioYoutubeMount";
+    wrap.appendChild(mount);
+
+    try {
+        const YT = await loadYoutubeIframeApi();
+        state.studioYoutubePlayer = new YT.Player("studioYoutubeMount", {
+            videoId,
+            playerVars: { playsinline: 1, controls: 1, rel: 0 },
+            events: {
+                onReady: () => console.log("[MovementCoach] YouTube reference player ready."),
+                onError: () => showToast("This YouTube video can't be embedded (the owner disabled embedding). Try a different link or upload a file instead."),
+            },
+        });
+    } catch (error) {
+        console.warn("YouTube player failed to load:", error);
+        showToast("Couldn't load the YouTube player \u2014 check your connection.");
+    }
+}
+
 function prepareReferenceForStudio() {
     const reference = $("studioReference");
+    const embedWrap = $("studioReferenceEmbedWrap");
+    const emptyEl = $("referenceEmpty");
+    const DEFAULT_EMPTY_HTML = "<span>\uD83C\uDFAC</span><p>Upload a reference video</p>";
 
-    if (state.referenceURL) {
-        reference.src = state.referenceURL;
-        reference.classList.remove("hidden");
-        $("referenceEmpty").classList.add("hidden");
-        $("referenceStatus").textContent = "READY";
-    } else {
+    // Always start clean — avoids stray players/state from a previous session,
+    // and avoids the Instagram-specific message text leaking into later states.
+    destroyStudioYoutubePlayer();
+    embedWrap?.classList.add("hidden");
+    reference.classList.add("hidden");
+    if (emptyEl) emptyEl.innerHTML = DEFAULT_EMPTY_HTML;
+
+    if (!state.referenceURL) {
         reference.removeAttribute("src");
-        reference.classList.add("hidden");
-        $("referenceEmpty").classList.remove("hidden");
+        emptyEl?.classList.remove("hidden");
         $("referenceStatus").textContent = "NOT REQUIRED";
+        return;
     }
+
+    if (state.referenceSourceType === "youtube") {
+        emptyEl?.classList.add("hidden");
+        $("referenceStatus").textContent = "PREVIEW ONLY";
+        embedWrap?.classList.remove("hidden");
+        setupStudioYoutubePlayer(state.youtubeVideoId);
+        return;
+    }
+
+    if (state.referenceSourceType === "instagram") {
+        // No embeddable/controllable player available — be honest in the UI
+        // rather than show a broken frame.
+        if (emptyEl) emptyEl.innerHTML = "<span>\uD83D\uDCF7</span><p>Instagram link saved, but can't be played here \u2014 open it on Instagram to follow along.</p>";
+        emptyEl?.classList.remove("hidden");
+        $("referenceStatus").textContent = "LINK ONLY";
+        return;
+    }
+
+    // "file" or "url" — identical native <video> handling either way.
+    reference.src = state.referenceURL;
+    reference.classList.remove("hidden");
+    emptyEl?.classList.add("hidden");
+    $("referenceStatus").textContent = "READY";
 }
 
 
@@ -1994,6 +2281,23 @@ function beginRecording() {
 ========================================================= */
 
 function startReferencePlayback() {
+    /* ---- NEW: YouTube reference uses the IFrame Player API instead of
+       the native <video> element's play()/currentTime/muted controls. ---- */
+    if (state.referenceSourceType === "youtube") {
+        const player = state.studioYoutubePlayer;
+        if (player && typeof player.playVideo === "function") {
+            try {
+                player.seekTo(0, true);
+                player.unMute();
+                player.playVideo();
+            } catch (error) {
+                console.warn("YouTube playback start failed:", error);
+            }
+        }
+        return;
+    }
+    if (state.referenceSourceType === "instagram") return; // no controllable player
+
     const reference = $("studioReference");
     if (!reference || reference.classList.contains("hidden") || !state.referenceURL) return;
 
@@ -2203,6 +2507,15 @@ function populateSessionIntelligence(session, result) {
 ========================================================= */
 
 function stopReferenceVideo() {
+    if (state.referenceSourceType === "youtube") {
+        const player = state.studioYoutubePlayer;
+        if (player && typeof player.pauseVideo === "function") {
+            try { player.pauseVideo(); } catch (error) { console.warn(error); }
+        }
+        return;
+    }
+    if (state.referenceSourceType === "instagram") return;
+
     const reference = $("studioReference");
     if (!reference) return;
     reference.pause();
@@ -2233,6 +2546,7 @@ function cleanupStudio() {
     stopPracticeTimer();
     stopReferenceVideo();
     stopCameraOnly();
+    destroyStudioYoutubePlayer();
 
     if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
         try { state.mediaRecorder.stop(); } catch (error) { console.warn(error); }
@@ -2360,6 +2674,13 @@ async function runAnalysis() {
 
         if (state.referenceFile) {
             formData.append("reference", state.referenceFile, state.referenceFile.name);
+        } else if (state.referenceSourceType === "url" && state.referenceURL) {
+            /* ---- NEW: a pasted direct-video-file link has no local File
+               object to upload — the backend fetches it server-side
+               instead (no CORS restriction there) and treats it exactly
+               like an uploaded reference file. YouTube/Instagram are
+               intentionally NOT sent here; see loadReferenceFromUrl(). ---- */
+            formData.append("referenceUrl", state.referenceURL);
         }
 
         formData.append("mode", state.selectedMode);

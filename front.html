@@ -155,8 +155,17 @@
                         <p>MP4, WebM or MOV</p>
                         <button class="secondary-btn" id="browseBtn">Choose Video</button>
                     </div>
+
+                    <div class="url-divider" id="urlDivider"><span>or paste a link</span></div>
+                    <div class="url-input-row" id="urlInputRow">
+                        <input type="url" id="referenceUrlInput" placeholder="YouTube, Instagram, or direct video link (.mp4)" />
+                        <button class="secondary-btn" id="loadUrlBtn">Load</button>
+                    </div>
+                    <p class="review-hint" id="urlInputHint">Direct video links work fully, including Gemini comparison. YouTube links play for visual reference only. Instagram links are preview-only.</p>
+
                     <div class="video-preview hidden" id="videoPreview">
                         <video id="referenceVideo" controls playsinline></video>
+                        <div class="embed-wrap hidden" id="referenceEmbedWrap"><iframe id="referenceEmbedFrame" src="" frameborder="0" allow="accelerometer; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>
                         <div class="video-info">
                             <div><strong id="videoName">Reference Video</strong><span id="videoDuration">Ready</span></div>
                             <button class="remove-btn" id="removeVideo">Remove</button>
@@ -256,6 +265,7 @@
                 <div class="stage-panel" id="referencePanel">
                     <div class="stage-label"><span>REFERENCE</span><span id="referenceStatus">READY</span></div>
                     <video id="studioReference" class="stage-video" controls playsinline></video>
+                    <div class="embed-wrap hidden" id="studioReferenceEmbedWrap"></div>
                     <div class="stage-empty" id="referenceEmpty"><span>🎬</span><p>Upload a reference video</p></div>
                 </div>
 
